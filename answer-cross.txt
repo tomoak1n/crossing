@@ -1,0 +1,223 @@
+24689222839,0
+ENV: Ruby, C
+
+交叉の回数を数えるというのは、この場合、先に見た数字より小さい数字が現れると交叉していることになる。
+直截てきな実装は、入力数字をリンクリストや配列に格納しておき、新しい数字を受ける度に、
+入力済みのデータで新しい数字より大きい数の個数を数えれば良い。
+例えばのシンプルな実装は
+
+#!/usr/bin/env ruby
+
+class CrossCounter
+  def initialize
+    @ary = Array.new
+  end
+  def registerandreportcrosses(number)
+    index = @ary.size-1
+    cross = 0
+    while index >= 0 && @ary[index] > number
+      cross += 1
+      index -= 1
+    end
+    @ary.insert(index + 1, number);
+    cross
+  end
+end
+cross = 0
+counter = CrossCounter.new
+ARGF.each_line do |line|
+  number = line.to_i
+  cross += counter.registerandreportcrosses(number)  
+end
+puts cross
+
+である。このような方法をとると、入力の個数Nに大してO(N^2)の計算時間を要する。
+一応、最後まで実行して24分で終了した。配列の挿入はコストがかかりそうなので、リンクリストで
+維持した方が定数では得をすると考えられるが、オーダーは変わらないので、アルゴリズムの
+問題に対する答えとしては嬉しくない。
+
+各段階で、新しい数字以上の数字の個数をO(logN)で回収できれば、全体の性能もO(NlogN)ですむ。
+そこで、２分探索木をつくって、各段階で、いくつ以上の数字をいくつ蓄えているかわかるようにすれば、
+速くなるというのが、最初に考えることである。
+ついで、普通に順次追加して行くと、構築時にバランスが崩れてあまり速くないという事態が発生すると
+好ましくないという懸念がある。
+先に要素総数を調べて2 パスで処理するということにすれば、比較的簡単に解決する。
+しかし、statでファイルサイズを調べて、行数上限を見積もることで、1 パスで済ませることもできる。
+大きさがわかっているということで、ノードリンクによるグラフ構造を作らないで、配列を用いて、
+アドレス計算で済ませることができる。
+
+当初は、完全な２分探索木を用意して、上位ビットから順に対応させて葉ノードまで辿り、途中で辿った
+ノードに数を加えて行き、その時、各だんでより大きい数字のノードについている数を数えて行くという
+ことで実装した。しかし、それだと各bitが0のところのノードにあたる数字は読む必要が発生しない。
+読む必要のない数字は書く必要もないので、各段でbitが1になるノードのみ下につながっている数字の
+格納数を記録するので良いということになった。これで、メモリー消費量も半減する。
+
+
+rubyで1.7秒まで削減した。
+% time ruby  crossing-b4.rb crossing.txt
+24689222839
+ruby crossing-b4.rb crossing.txt  1.63s user 0.01s system 99% cpu 1.649 total
+
+#!/usr/bin/env ruby
+
+class CrossCounter
+  def initialize(nnodes)
+    @tdepth = Math::log2(nnodes).to_i 
+    @arys = Array.new
+    (0..@tdepth).each do |i|
+      @arys[i]=Array.new(1<<i, 0)
+    end
+  end
+  def registerandreportcrosses(number)
+    cross = 0
+    i = @tdepth
+    sn = number
+    while i >= 0
+      t = sn >> 1
+      a = @arys[i]
+      if (sn&1) == 0
+        cross += a[t]
+      else
+        a[t] += 1
+      end
+      sn = t
+      i -= 1
+    end
+    cross
+  end
+end
+
+fsize = File::Stat.new(ARGV[0]).size
+maxsizeest = fsize/Math::log10(fsize).to_i
+
+counter = CrossCounter.new(maxsizeest)
+cross = 0
+ARGF.each_line do |line|
+  cross += counter.registerandreportcrosses(line.to_i)  
+end
+puts cross
+
+その後、同じアルゴリズムCで書き直して、0.051 〜 0.055 秒になった。
+/* crossing.c for counting the number of crosses for codeiq by hyuki */
+#include <stdio.h>
+#include <stdint.h>
+#include <math.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+
+typedef struct {
+  int depth;
+  int32_t **data_a;
+} count_factory;
+  
+
+count_factory
+initializefactory(int maxsize)
+{
+  count_factory f;
+  int i;
+  f.depth = log2(maxsize);
+  f.data_a = malloc((f.depth+1) * sizeof(uint32_t*));
+  for(i = 0; i <= f.depth; i++){
+    f.data_a[i] = calloc(1 << i, sizeof(uint32_t));
+  }
+  return f;
+}
+
+int32_t
+registerandreportcrosses(count_factory *f, int number)
+{
+  int32_t  cross = 0;
+  int i = f->depth;
+  int sn = number;
+  while(i >= 0){
+    int t = sn >> 1;
+    uint32_t *a = f->data_a[i];
+    if ((sn&1) == 0)
+      cross += a[t];
+    else
+      a[t] += 1;
+    sn = t;
+    i -= 1;
+  }
+  return cross;
+}
+
+int 
+main(int argc, char**argv)
+{
+  count_factory f;
+  struct stat sb;
+  off_t filesize;
+  FILE*input;
+  int maxsizeest;
+  int64_t cross;
+  int c;
+
+  if(argc < 2) exit(1);
+  stat(argv[1], &sb);
+  filesize = sb.st_size;
+  maxsizeest = filesize/log10(filesize);
+
+  f = initializefactory(maxsizeest);
+  cross = 0;
+  
+  input = fopen(argv[1], "r");
+  uint32_t n = 0;
+  while((c=fgetc(input))!=EOF){
+    switch(c){
+     case '\n':
+      cross += registerandreportcrosses(&f, n);
+      n = 0;
+      break;
+     case '\r':
+      break;
+     default:
+      n= n*10 + c - '0';
+    }
+  }
+  if(n != 0){/*no new line at the last line */
+    cross += registerandreportcrosses(&f, n);
+  }
+  printf("%lld\n", cross);
+  return 0;
+}
+
+
+systemで100回呼び出して5.055秒なので1回なら51 msという事である。
+time ruby 100cross.rb 100 >/dev/null
+ruby 100cross.rb 100 > /dev/null  4.78s user 0.26s system 99% cpu 5.055 total
+
+100cross.rb の中は
+#!/usr/bin/env ruby
+
+(1..ARGV[0].to_i).each do 
+  system("./cross crossing.txt")
+end
+です。
+
+基準3秒は絶対値指定でだされたが、やはり、コンピュータの速さの影響を受けるので、
+相対値として参考になりそうな数字を出すべく、いくつかの、標準コマンドと比較した。
+
+% time cat crossing.txt >/dev/null
+cat crossing.txt > /dev/null  0.00s user 0.00s system 86% cpu 0.003 total
+% time wc crossing.txt >/dev/null
+wc crossing.txt > /dev/null  0.02s user 0.00s system 97% cpu 0.019 total
+% time wc crossing.txt >/dev/null
+wc crossing.txt > /dev/null  0.02s user 0.00s system 97% cpu 0.018 total
+% time sort crossing.txt >/dev/null
+sort crossing.txt > /dev/null  4.80s user 0.02s system 99% cpu 4.835 total
+% time sort -n  crossing.txt >/dev/null
+sort -n crossing.txt > /dev/null  0.29s user 0.02s system 99% cpu 0.310 total
+
+catはさすがにmmap & writeするだけでよく、中身を見る必要がないので、ずっと速い。
+wcだと、各文字を見る必要があるので、その３倍弱で交差点数え上げ完了するのはかなり高性能な部類であろう。
+sortよりはっきり速い。
+
+わたし「交差点の数は指定の50倍ほどの性能で出せるようになりました」
+依頼者「うむご苦労」
+わたし「ところで、気になったのですが、お宅では３次元空間で厚み方向にずらすことによって、交差を回避することは検討しないんですか?」
+依頼者「実は、それも研究中なんじゃ、もう少しでできそうと言う報告がきておる」
+依頼者「そこで、実は、次の依頼が、それなんじゃよ。デバイスの製造上の都合から７通りの干渉しない高さを作れるようになるみこみなので、それぞれの、通信パスの高さを最適化して、もっとも干渉の少なくなる組合わせを調べてほしんじゃ」
+
+かくて、新しいミッションが始まったが、はたして終わるのだろうか……
